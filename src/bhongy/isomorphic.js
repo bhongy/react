@@ -57,10 +57,217 @@ function ReactChildrenOnlyChild(children) {
 }
 
 var ReactBaseClasses = (function ReactBaseClassesClosure() {
+  var emptyObject = require('fbjs/lib/emptyObject');
+
+  // TODO: review if this is typed correctly
+  type UpdaterCallback<State, Props, Context> = (
+    nextState: State,
+    props: Props,
+    context: Context,
+  ) => void;
+  // should export this as an interface for renderers to implement
+  type ReactUpdater = {
+    isMounted: (publicInstance: ReactClass) => boolean,
+    enqueueForceUpdate: (
+      publicInstance: ReactClass,
+      callback?: UpdaterCallback,
+      callerName?: string,
+    ) => void,
+    enqueueReplaceState: (
+      publicInstance: ReactClass,
+      completeState,
+      callback?: UpdaterCallback,
+      callerName?: string,
+    ) => void,
+    enqueueSetState: (
+      publicInstance: ReactClass,
+      completeState,
+      callback?: UpdaterCallback,
+      callerName?: string,
+    ) => void,
+  };
+
+  // default updater (noop) - the actual updater is injected
+  // for different renderers - smart design!
+  // this is the only place that uses this module
+  var ReactNoopUpdateQueue = (function ReactNoopUpdateQueueClosure() {
+    if (__DEV__) {
+      var warning = require('fbjs/lib/warning');
+    }
+
+    function warnNoop(publicInstance, callerName) {
+      if (__DEV__) {
+        var constructor = publicInstance.constructor;
+        var constructorName: string = constructor
+          ? constructor.displayName || constructor.name
+          : 'ReactClass';
+
+        warning(
+          false,
+          '%s(...): Can only update a mounted or mounting component. ' +
+            'This usually means you called %s() on an unmounted component. ' +
+            'This is a no-op.\n\nPlease check the code for the %s component.',
+          callerName,
+          callerName,
+          constructorName,
+        );
+      }
+    }
+
+    var ReactNoopUpdateQueueExport: ReactUpdater = {
+      isMounted: function isMounted(publicInstance) {
+        // ? how does this change to return true when mounted ?
+        return false;
+      },
+
+      // below are just mapping arguments
+      // and delegate to `warnNoop` (the actual implementation)
+
+      enqueueForceUpdate: function enqueueForceUpdate(
+        publicInstance,
+        callback,
+        callerName,
+      ) {
+        warnNoop(publicInstance, 'forceUpdate');
+      },
+
+      enqueueReplaceState: function enqueueReplaceState(
+        publicInstance,
+        completeState,
+        callback,
+        callerName,
+      ) {
+        warnNoop(publicInstance, 'replaceState');
+      },
+
+      enqueueSetState: function enqueueSetState(
+        publicInstance,
+        completeState,
+        callback,
+        callerName,
+      ) {
+        warnNoop(publicInstance, 'setState');
+      },
+    };
+
+    return ReactNoopUpdateQueueExport;
+  })();
+
+  // constructor
+  function ReactComponent(props, context, updater) {
+    this.props = props;
+    this.context = context;
+    // ? why needing `emptyObject` ?
+    this.refs = emptyObject;
+    // ? what is the updater in Fiber ?
+    this.updater = updater || ReactNoopUpdateQueue;
+  }
+
+  // use in renderers as a flag (checking truthy)
+  // might as well assigning `true` to it?
+  ReactComponent.prototype.isReactComponent = {};
+  ReactComponent.prototype.setState = function(
+    partialState,
+    callback: UpdaterCallback,
+  ) {
+    var isValidPartialState =
+      typeof partialState === 'object' ||
+      typeof partialState === 'function' ||
+      // `==` is true for `null` and `undefined`
+      partialState == null;
+
+    var message =
+      'setState(...): takes an object of state variables to update or a ' +
+      'function which returns an object of state variables.';
+
+    require('fbjs/lib/invariant')(isValidPartialState, message);
+    this.updater.enqueueSetState(this, partialState, callback, 'setState');
+  };
+
+  ReactComponent.prototype.forceUpdate = function(callback) {
+    // opportunity to type interface for users (renderers)
+    // even "requires" that the third argument has to be
+    // the exact string literal 'forceUpdate'
+    this.updater.enqueueForceUpdate(this, callback, 'forceUpdate');
+  };
+
+  // deprecated react component APIs
+
+  if (__DEV__) {
+    var deprecatedAPIs = {
+      isMounted: [
+        // info[0]
+        'isMounted',
+        // info[1]
+        'Instead, make sure to clean up subscriptions and pending requests in ' +
+          'componentWillUnmount to prevent memory leaks.',
+      ],
+      replaceState: [
+        'replaceState',
+        'Refactor your code to use setState instead (see ' +
+          'https://github.com/facebook/react/issues/3236).',
+      ],
+    };
+
+    // set getters for component prototype of all `deprecatedAPIs`
+    // so if any component uses it, the warning will log
+    var defineDeprecationWarning = function(methodName, info) {
+      Object.defineProperties(ReactComponent.prototype, methodName, {
+        get: function() {
+          require('lowPriorityWarning')(
+            false,
+            '%s(...) is deprecated in plain JavaScript React classes. %s',
+            info[0],
+            info[1],
+          );
+
+          return undefined;
+        },
+      });
+    };
+
+    // Changed to a declarative loop for fun. :)
+    // Although it won't work below IE9.
+    Object.keys(deprecatedAPIs).forEach(fnName => {
+      defineDeprecationWarning(fnName, deprecatedAPIs[fnName]);
+    });
+  }
+
+  // boy, do I miss `class`, `extends`
+  function inheritClass(ChildClass, ParentClass) {
+    ChildClass.prototype = Object.create(ParentClass.prototype);
+    ChildClass.prototype.constructor = ChildClass;
+    // performance optimization, significant?
+    // avoid enumerate through prototype chain e.g. __proto__
+    Object.assign(ChildClass.prototype, ParentClass.prototype);
+  }
+
+  function ReactPureComponent(props, context, updater) {
+    // call super
+    ReactComponent.call(this, props, context, updater);
+  }
+
+  inheritClass(ReactPureComponent, ReactComponent);
+  Object.assign(ReactPureComponent.prototype, {
+    isPureReactComponent: true,
+  });
+
+  function ReactAsyncComponent(props, context, updater) {
+    ReactComponent.call(this, props, context, updater);
+  }
+
+  inheritClass(ReactAsyncComponent, ReactComponent);
+  Object.assign(ReactAsyncComponent.prototype, {
+    unstable_isAsyncReactComponent: true,
+    render: function() {
+      return this.props.children;
+    },
+  });
+
   return {
-    Component: TEMPORARY_TO_IMPLEMENT,
-    PureComponent: TEMPORARY_TO_IMPLEMENT,
-    AsyncComponent: TEMPORARY_TO_IMPLEMENT,
+    Component: ReactComponent,
+    PureComponent: ReactPureComponent,
+    AsyncComponent: ReactAsyncComponent,
   };
 })();
 
