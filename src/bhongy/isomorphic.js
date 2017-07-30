@@ -48,7 +48,7 @@ var ReactChildren = (function ReactChildrenClosure() {
   };
 })();
 
-function ReactChildrenOnlyChild(children) {
+function ReactChildrenOnlyChild<T>(children: T): T {
   require('fbjs/lib/invariant')(
     ReactElement.isValidElement(children),
     'React.Children.only expected to receive a single React element child.',
@@ -66,23 +66,23 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
     context: Context,
   ) => void;
   // should export this as an interface for renderers to implement
-  type ReactUpdater = {
-    isMounted: (publicInstance: ReactClass) => boolean,
+  type ReactUpdater<State> = {
+    isMounted: (publicInstance: ReactClass<*>) => boolean,
     enqueueForceUpdate: (
-      publicInstance: ReactClass,
-      callback?: UpdaterCallback,
+      publicInstance: ReactClass<*>,
+      callback?: UpdaterCallback<*>,
       callerName?: string,
     ) => void,
     enqueueReplaceState: (
-      publicInstance: ReactClass,
-      completeState,
-      callback?: UpdaterCallback,
+      publicInstance: ReactClass<*>,
+      completeState: State,
+      callback?: UpdaterCallback<*>,
       callerName?: string,
     ) => void,
     enqueueSetState: (
-      publicInstance: ReactClass,
-      completeState,
-      callback?: UpdaterCallback,
+      publicInstance: ReactClass<*>,
+      completeState: State,
+      callback?: UpdaterCallback<*>,
       callerName?: string,
     ) => void,
   };
@@ -114,7 +114,7 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
       }
     }
 
-    var ReactNoopUpdateQueueExport: ReactUpdater = {
+    var ReactNoopUpdateQueueExport: ReactUpdater<*> = {
       isMounted: function isMounted(publicInstance) {
         // ? how does this change to return true when mounted ?
         return false;
@@ -154,6 +154,7 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
   })();
 
   // constructor
+  // $FlowFixMe
   function ReactComponent(props, context, updater) {
     this.props = props;
     this.context = context;
@@ -168,7 +169,7 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
   ReactComponent.prototype.isReactComponent = {};
   ReactComponent.prototype.setState = function(
     partialState,
-    callback: UpdaterCallback,
+    callback: UpdaterCallback<*>,
   ) {
     var isValidPartialState =
       typeof partialState === 'object' ||
@@ -212,7 +213,7 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
     // set getters for component prototype of all `deprecatedAPIs`
     // so if any component uses it, the warning will log
     var defineDeprecationWarning = function(methodName, info) {
-      Object.defineProperties(ReactComponent.prototype, methodName, {
+      Object.defineProperty(ReactComponent.prototype, methodName, {
         get: function() {
           require('lowPriorityWarning')(
             false,
@@ -242,6 +243,7 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
     Object.assign(ChildClass.prototype, ParentClass.prototype);
   }
 
+  // $FlowFixMe
   function ReactPureComponent(props, context, updater) {
     // call super
     ReactComponent.call(this, props, context, updater);
@@ -252,6 +254,7 @@ var ReactBaseClasses = (function ReactBaseClassesClosure() {
     isPureReactComponent: true,
   });
 
+  // $FlowFixMe
   function ReactAsyncComponent(props, context, updater) {
     ReactComponent.call(this, props, context, updater);
   }
@@ -286,7 +289,7 @@ if (__DEV__) {
 
   cloneElement = ReactElementValidator.cloneElement;
   createElement = ReactElementValidator.createElement;
-  createFactory = ReactElementValidator.createFactoryt;
+  createFactory = ReactElementValidator.createFactory;
 }
 
 var ReactVersion = '16.0.0-beta.2';
@@ -296,6 +299,10 @@ var ReactInternals = (function ReactInternalsClosure(params) {
   };
 
   if (__DEV__) {
+    /*
+      $FlowFixMe: using Object.assign as a terse way
+      to mutate the original object causes flow errors
+    */
     Object.assign(ReactInternalsExport, {
       ReactComponentTreeHook: TEMPORARY_TO_IMPLEMENT,
       ReactDebugCurrentFrame: TEMPORARY_TO_IMPLEMENT,
