@@ -15,12 +15,416 @@
 function TEMPORARY_TO_IMPLEMENT() {}
 
 var ReactElement = (function ReactElementClosure() {
+  var ReactCurrentOwner = require('ReactCurrentOwner');
+  var hasOwnProperty = function(obj: mixed, propName: string): boolean {
+    return Object.prototype.hasOwnProperty.call(obj, propName);
+  };
+
   // basic Symbol support: Safari (& mobile) 9+ and IE12(edge)+
   var REACT_ELEMENT_TYPE =
     (typeof Symbol === 'function' &&
       Symbol.for &&
       Symbol.for('react.element')) ||
     0xeac7;
+
+  // use to "filter" `props` from `config` object
+  // when `createElement` or `cloneElement`
+  // ---
+  // convert to ['key', 'ref', '__self', '__source']
+  // and do `RESERVED_PROPS.indexOf(propName)` might be more concise
+  var RESERVED_PROPS = {
+    key: true,
+    ref: true,
+    __self: true,
+    __source: true,
+  };
+
+  type SourceInfo = { fileName: string, lineNumber: number };
+  type RESERVED_PROPS_SHAPE = {
+    key?: string,
+    ref?: any,
+    __self?: any,
+    __source?: SourceInfo,
+  };
+
+  type SpecialPropName = 'key' | 'ref';
+
+  function hasValidConfigProp(propName: SpecialPropName, config) {
+    if (__DEV__) {
+      // essentially, check "if config[propName]'s getter has isReactWarning -> true"
+      // the conditions are to verify that we can safely ask that question
+      // "getter.isReactWarning" is set in "defineKeyPropWarningGetter"
+      if (hasOwnProperty(config, propName)) {
+        var getter = Object.getOwnPropertyDescriptor(propName);
+        if (getter && getter.isReactWarning) {
+          return false;
+        }
+      }
+    }
+    return config[propName] !== undefined;
+  }
+
+  var hasValidRef = hasValidConfigProp.bind(null, 'ref');
+  var hasValidKey = hasValidConfigProp.bind(null, 'key');
+
+  // ? internal most flexible create element ?
+  // ---
+  // TODO: define types for these values for documentation
+  function ReactElementExport<Config>(
+    type,
+    key,
+    ref,
+    self,
+    source,
+    owner,
+    props,
+  ) {
+    var element: {
+      props: $PropsOf<Config>,
+      // TODO: annotate this properly
+      // dev only
+      _store?: ?Object,
+      _self?: any,
+      _source?: ?SourceInfo,
+    } = {
+      $$typeof: REACT_ELEMENT_TYPE,
+      type: type,
+      key: key,
+      ref: ref,
+      props: props,
+      _owner: owner,
+    };
+
+    if (__DEV__) {
+      element._store = {};
+
+      // ? where/how do React change "_store.validated" ?
+      Object.defineProperty(element._store, 'validated', {
+        configurable: false,
+        enumerable: false,
+        writable: true,
+        value: false,
+      });
+
+      // `element._self` and `element._source` are frozen
+      // cannot be changed, redefined, or deleted
+
+      Object.defineProperty(element, '_self', {
+        configurable: false,
+        enumerable: false,
+        writable: false,
+        value: self,
+      });
+
+      Object.defineProperty(element, '_source', {
+        configurable: false,
+        enumerable: false,
+        writable: false,
+        value: source,
+      });
+
+      // freeze prevent properties addition, removals, reassign,
+      // redefined, and prevent changing prototype
+      if (Object.freeze) {
+        Object.freeze(element.props);
+        Object.freeze(element);
+      }
+    }
+
+    return element;
+  }
+
+  // mechanism to warn about accessing key, ref
+  // only use in `createElement`
+  var specialPropWarningShown: { [SpecialPropName]: boolean } = {
+    key: false,
+    ref: false,
+  };
+
+  // factory pattern instead of binding first argument
+  function defineConfigPropWarningGetterFor(propName: SpecialPropName) {
+    return function(props, displayName) {
+      var warnAboutAccessingProp = function() {
+        // only show once
+        if (!specialPropWarningShown[propName]) {
+          specialPropWarningShown[propName] = true;
+
+          require('fbjs/lib/warning')(
+            false,
+            '%s: `' +
+              propName +
+              '` is not a prop. Trying to access it will result ' +
+              'in `undefined` being returned. If you need to access the same ' +
+              'value within the child component, you should pass it as a different ' +
+              'prop. (https://fb.me/react-special-props)',
+            displayName,
+          );
+        }
+      };
+
+      warnAboutAccessingProp.isReactWarning = true;
+      Object.defineProperty(props, propName, {
+        get: warnAboutAccessingProp,
+        configurable: true,
+      });
+    };
+  }
+
+  var defineKeyPropWarningGetter = defineConfigPropWarningGetterFor('key');
+  var defineRefPropWarningGetter = defineConfigPropWarningGetterFor('ref');
+
+  ReactElementExport.createElement = function createElement<Config>(
+    type: ReactClass<Config>,
+    config: Config & RESERVED_PROPS_SHAPE,
+    children: React$Node<Config>,
+  ) {
+    var props = {};
+    var ref = null;
+    var key: ?string = null;
+    var self = null;
+    var source = null;
+
+    // process `config` to `props`, `ref`, `key`, etc.
+    if (config != null) {
+      if (hasValidKey(config)) {
+        // make sure key is a string
+        // $FlowFixMe: `hasValidKey` should already ensure it
+        key = '' + config.key;
+      }
+
+      if (hasValidRef(config)) {
+        ref = config.ref;
+      }
+
+      self = config.__self === undefined ? null : config.__self;
+      source = config.__source === undefined ? null : config.__source;
+
+      // copy all non-reserved props from `config` to `props`
+      // we know `Object.keys` on config won't thow from
+      // previous `config != null` check
+      // though it might give weird behavior if
+      // config is a number, string, for example
+      Object.keys(config).forEach(propName => {
+        if (!RESERVED_PROPS.hasOwnProperty(propName)) {
+          props[propName] = config[propName];
+        }
+      });
+    }
+
+    // process `createElement` arguments to `props.children`
+    // arguments[0] -> type
+    // arguments[1] -> config
+    var childStartingIndex = 2;
+    var childrenLength = arguments.lenght - childStartingIndex;
+    if (childrenLength === 1) {
+      props.children = children;
+    } else if (childrenLength === 1) {
+      var childArray = [];
+      for (var i = 0; i < childrenLength; i++) {
+        childArray[i] = arguments[i + childStartingIndex];
+      }
+      if (__DEV__) {
+        // make it immutable (cannot change, add, or remove members)
+        if (Object.freeze) {
+          Object.freeze(childArray);
+        }
+      }
+      props.children = childArray;
+    }
+
+    // resolve default props
+    if (type && type.defaultProps) {
+      // use defaultProps if either
+      //   1) `props` does not have the key for `propName`
+      //   2) has value at `props[propName]` but it's undefined
+      // do not use defaultProps if `null` was assigned
+      var defaultProps = type.defaultProps;
+
+      // don't need to check for hasOwnProperty
+      // because we check againsts `props[propName]`
+      // to be undefined - props from prototype will "not" be undefined
+      for (let propName in defaultProps) {
+        if (props[propName] === undefined) {
+          props[propName] = defaultProps[propName];
+        }
+      }
+    }
+
+    if (__DEV__) {
+      if (key || ref) {
+        // ? quite confused here ?
+        if (
+          // ? check for when first created - time dependent ?
+          typeof props.$$typeof === 'undefined' ||
+          // ? check for when invalid elements ?
+          props.$$typeof !== REACT_ELEMENT_TYPE
+        ) {
+          var displayName = typeof type === 'function'
+            ? type.displayName || type.name || 'Unknown'
+            : type; // primitive type - e.g. 'div'
+          if (key) {
+            defineKeyPropWarningGetter(props, displayName);
+          }
+          if (key) {
+            defineRefPropWarningGetter(props, displayName);
+          }
+        }
+      }
+    }
+
+    return ReactElement(
+      type,
+      key,
+      ref,
+      self,
+      source,
+      // ? don't get how the owner mechanism work ?
+      ReactCurrentOwner.current,
+      props,
+    );
+  };
+
+  ReactElementExport.createFactory = function createFactory<Config>(
+    type: ReactClass<Config>,
+  ) {
+    var factory = ReactElementExport.createElement.bind(null, type);
+
+    // $FlowFixMe: `type` is not in `factory`
+    Object.defineProperty(factory, 'type', {
+      get: function() {
+        require('lowPriorityWarning')(
+          false,
+          'Warning: do not rely on `factory.type`.',
+        );
+
+        return type;
+      },
+    });
+
+    return factory;
+  };
+
+  // create a new element with the new key and clone the rest
+  ReactElementExport.cloneAndReplaceKey = function cloneAndReplaceKey(
+    oldElement,
+    newKey,
+  ) {
+    return ReactElementExport(
+      oldElement.type,
+      newKey,
+      oldElement.ref,
+      // interesting, `_self` and `_source` points back
+      // to the old reference ... oh, see `cloneElement`
+      oldElement._self,
+      oldElement._source,
+      oldElement._owner,
+      oldElement.props,
+      // ? get new `_store` ?
+    );
+  };
+
+  // interface and behavior is similar to
+  // `createElement(type, config, children)`
+  ReactElementExport.cloneElement = function cloneElement<Config>(
+    element: React$Element<Config> & {
+      _owner: any,
+      _self: React$Element<*>, // might use different Config?
+      _source: SourceInfo, // source shape
+    },
+    config: Config & RESERVED_PROPS_SHAPE,
+    children: React$Node<Config>,
+  ) {
+    // copy original props
+    var props = Object.assign({}, element.props);
+    var key = element.key;
+    var ref = element.ref;
+
+    // `self` and `source` will not be changed in this function
+    // `self` will point to the original
+    // `source` is reserved using the original source
+    //   "unlikely to be targeted by a transpiler,
+    //    and the original source is probably a better indicator
+    //    of the true owner"
+    var self = element._self;
+    var source = element._source;
+
+    // owner might change if `config.ref` is provided
+    var owner = element._owner;
+
+    // process `config` against original element
+    if (config != null) {
+      // use the clone's config.key instead of original's if provided
+      if (hasValidKey(config)) {
+        // $FlowFixMe: hasValidKey should already verify it
+        key = '' + config.key;
+      }
+
+      // use the clone's config.ref instead of original's if provided
+      if (hasValidRef(config)) {
+        ref = config.ref;
+        owner = ReactCurrentOwner.current;
+      }
+
+      /* same implementation as the one in `createElement` */
+      // copy all non-reserved props from `config` to `props`
+      Object.keys(config).forEach(propName => {
+        if (!RESERVED_PROPS.hasOwnProperty(propName)) {
+          props[propName] = config[propName];
+        }
+      });
+
+      // use defaultProps from the original component (type)
+      var defaultProps;
+      if (element.type && element.type.defaultProps) {
+        defaultProps = element.type.defaultProps;
+      }
+
+      /* same implementation as the one in `createElement` */
+      // fill in any props that are still `undefined`
+      // using `defaultProps` - after clone original
+      // and adding ones from clone's `config`
+      for (let propName in defaultProps) {
+        if (props[propName] === undefined) {
+          props[propName] = defaultProps[propName];
+        }
+      }
+    }
+
+    /* same implementation as the one in `createElement` */
+    // process `cloneElement` arguments to `props.children`
+    // arguments[0] -> type
+    // arguments[1] -> config
+    // ---
+    // this replaces the original element.props.children
+    var childStartingIndex = 2;
+    var childrenLength = arguments.lenght - childStartingIndex;
+    if (childrenLength === 1) {
+      props.children = children;
+    } else if (childrenLength === 1) {
+      var childArray = [];
+      for (var i = 0; i < childrenLength; i++) {
+        childArray[i] = arguments[i + childStartingIndex];
+      }
+      if (__DEV__) {
+        // make it immutable (cannot change, add, or remove members)
+        if (Object.freeze) {
+          Object.freeze(childArray);
+        }
+      }
+      props.children = childArray;
+    }
+
+    // return new element
+    return ReactElement(
+      element.type,
+      key,
+      ref,
+      self,
+      source,
+      owner,
+      props,
+    );
+  };
 
   function isValidElement(elementType, input) {
     return (
@@ -30,13 +434,11 @@ var ReactElement = (function ReactElementClosure() {
     );
   }
 
-  return {
-    cloneElement: TEMPORARY_TO_IMPLEMENT,
-    createElement: TEMPORARY_TO_IMPLEMENT,
-    createFactory: TEMPORARY_TO_IMPLEMENT,
-    // can't help it - just want to add a little functional flair :P
-    isValidElement: isValidElement.bind(REACT_ELEMENT_TYPE),
-  };
+  // can't help it - just want to add a little functional flair :P
+  // ReactElementExport.isValidElement = isValidElement.bind(REACT_ELEMENT_TYPE);
+  ReactElementExport.isValidElement = isValidElement.bind(REACT_ELEMENT_TYPE);
+
+  return ReactElementExport;
 })();
 
 var ReactChildren = (function ReactChildrenClosure() {
